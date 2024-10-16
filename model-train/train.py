@@ -111,12 +111,18 @@ class SelfPlay:
         :return: 返回该局游戏的状态、动作和最终结果
         """
         state = GameState()  # 初始化游戏状态
+
         game_data = []  # 记录该局游戏的状态、动作及奖励
 
         while not state.is_terminal():  # 当游戏没有结束时
             current_player = state.current_player
+
+            # 为当前玩家掷骰子
+            state.current_dice = random.randint(1, 6)
+
             # 使用MCTS搜索并选择动作
-            mcts_root = self.mcts.run(state)  # 通过MCTS搜索
+            mcts_root = self.mcts.run(state.copy())  # 通过MCTS搜索
+
             if mcts_root is None:
                 print("MCTS root is None.")
                 break
@@ -244,10 +250,10 @@ def train_model(model, optimizer, training_data, batch_size=32, epochs=10):
     for epoch in range(epochs):
         total_loss = 0  # 累计loss
         for batch_idx, (batch_states, batch_policies, batch_rewards) in enumerate(data_loader):
-            print(f"Batch {batch_idx + 1}/{len(data_loader)}:")
-            print(f"  Batch states shape: {batch_states.shape}")  # 应输出 torch.Size([batch_size, 4, 5, 5])
-            print(f"  Batch policies shape: {batch_policies.shape}")  # 应输出 torch.Size([batch_size, 18])
-            print(f"  Batch rewards shape: {batch_rewards.shape}")  # 应输出 torch.Size([batch_size, 1])
+            # print(f"Batch {batch_idx + 1}/{len(data_loader)}:")
+            # print(f"  Batch states shape: {batch_states.shape}")  # 应输出 torch.Size([batch_size, 4, 5, 5])
+            # print(f"  Batch policies shape: {batch_policies.shape}")  # 应输出 torch.Size([batch_size, 18])
+            # print(f"  Batch rewards shape: {batch_rewards.shape}")  # 应输出 torch.Size([batch_size, 1])
 
             batch_states = batch_states.to(next(model.parameters()).device)
             batch_policies = batch_policies.to(next(model.parameters()).device)
@@ -277,7 +283,7 @@ def train_model(model, optimizer, training_data, batch_size=32, epochs=10):
         avg_loss = total_loss / len(data_loader)
         print(f"Epoch {epoch + 1}/{epochs} - Avg Loss: {avg_loss}")
 
-    torch.save(model.state_dict(), 'trained_model.pth')
+    torch.save(model.state_dict(), '../trained_model.pth')
     print("模型已保存为 'trained_model.pth'")
 
 
@@ -293,11 +299,11 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     # 执行自我博弈，生成训练数据
-    self_play_agent = SelfPlay(model, c_puct=1.0, num_simulations=1600, num_games=3000, num_threads=4)
+    self_play_agent = SelfPlay(model, c_puct=1.0, num_simulations=1600, num_games=30, num_threads=4)
     self_play_agent.self_play()
 
     # 获取自我博弈生成的训练数据
     training_data = self_play_agent.get_training_data()
 
     # 使用生成的数据训练模型
-    train_model(model, optimizer, training_data, batch_size=32, epochs=1000)
+    train_model(model, optimizer, training_data, batch_size=32, epochs=10)

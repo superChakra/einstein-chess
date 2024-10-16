@@ -14,7 +14,9 @@ class GameState:
         self.current_player = 1  # 当前玩家: 1代表红方, -1代表蓝方
         self.history_length = history_length
         self.history = deque(maxlen=self.history_length)  # 保存最近几轮的棋盘状态
+        self.current_dice = None  # 新增：当前骰子结果
         self.initialize_pieces()  # 初始化棋子位置
+        self.roll_dice()  # 第一次掷骰子
         self.update_history()  # 保存初始棋盘状态
 
     def initialize_pieces(self):
@@ -25,52 +27,52 @@ class GameState:
         self.board[1][0:2] = self.red_list[3:5]
         self.board[2][0] = self.red_list[5]
         # 蓝方棋子放在右下角
-        self.board[4][4:1:-1] = self.blue_list[:3]  # 填充 4,3,2
-        self.board[3][4:2:-1] = self.blue_list[3:5]  # 填充 4,3
-        self.board[2][4] = self.blue_list[5]  # 填充 4
+        self.board[4][4:1:-1] = self.blue_list[:3]
+        self.board[3][4:2:-1] = self.blue_list[3:5]
+        self.board[2][4] = self.blue_list[5]
 
     def roll_dice(self):
-        return random.randint(1, 6)
+        self.current_dice = random.randint(1, 6)
 
     def get_legal_actions(self):
         """
-        获取当前玩家的所有合法移动，基于骰子结果
+        获取当前玩家的所有合法移动，基于当前骰子结果
         :return: 列表 of ((start_i, start_j), (end_i, end_j))
         """
-        dice_result = self.roll_dice()
-        # print(f"Dice rolled: {dice_result}")
-
+        dice_result = self.current_dice
         # 获取当前玩家的可用棋子
         if self.current_player == 1:
             player_pieces = [piece for piece in self.red_list if piece in self.board.flatten()]
+            directions = [(1, 0), (0, 1), (1, 1)]
         else:
             player_pieces = [abs(piece) for piece in self.blue_list if -piece in self.board.flatten()]
+            directions = [(-1, 0), (0, -1), (-1, -1)]
 
         # 找到与骰子结果最接近的棋子
-        closest_piece_num = None
         min_diff = float('inf')
+        closest_pieces = []
         for piece in player_pieces:
             diff = abs(piece - dice_result)
             if diff < min_diff:
                 min_diff = diff
-                closest_piece_num = piece
-            elif diff == min_diff and piece < closest_piece_num:
-                closest_piece_num = piece  # 选择较小编号
+                closest_pieces = [piece]
+            elif diff == min_diff:
+                closest_pieces.append(piece)
 
-        if closest_piece_num is None:
+        if not closest_pieces:
             return []  # 没有可移动的棋子
 
-        # 找到所有符合closest_piece_num的棋子位置
         legal_actions = []
-        directions = [(1, 0), (0, 1), (1, 1)] if self.current_player == 1 else [(-1, 0), (0, -1), (-1, -1)]
-
-        for i in range(5):
-            for j in range(5):
-                if self.board[i][j] == closest_piece_num * self.current_player:
-                    for direction in directions:
-                        ni, nj = i + direction[0], j + direction[1]
-                        if 0 <= ni < 5 and 0 <= nj < 5:
-                            legal_actions.append(((i, j), (ni, nj)))
+        for piece_num in closest_pieces:
+            piece_value = piece_num if self.current_player == 1 else -piece_num
+            # 找到所有符合 piece_value 的棋子位置
+            positions = np.argwhere(self.board == piece_value)
+            for pos in positions:
+                i, j = pos
+                for direction in directions:
+                    ni, nj = i + direction[0], j + direction[1]
+                    if 0 <= ni < 5 and 0 <= nj < 5:
+                        legal_actions.append(((i, j), (ni, nj)))
         return legal_actions
 
     def apply_move(self, move):
@@ -78,7 +80,6 @@ class GameState:
         执行一次移动并切换玩家
         :param move: ((start_i, start_j), (end_i, end_j))
         """
-        # print(f"--------移动的操作move：{move}------")
         (start, end) = move
         moving_piece = self.board[start[0]][start[1]]
         target_piece = self.board[end[0]][end[1]]
@@ -97,6 +98,7 @@ class GameState:
         self.board[start[0]][start[1]] = 0
         self.move_count += 1
         self.current_player *= -1  # 切换玩家
+        self.roll_dice()  # 新增：切换玩家后掷骰子
         self.update_history()  # 更新历史记录
 
     def is_terminal(self):
@@ -139,34 +141,36 @@ class GameState:
     def to_tensor(self):
         """
         将棋盘状态转换为神经网络输入张量
-        :return: torch.Tensor of shape (4, 5, 5)
+        :return: torch.Tensor of shape (10, 5, 5)
         """
-        red_pieces = (self.board > 0).astype(np.float32)  # 红方棋子
-        blue_pieces = (self.board < 0).astype(np.float32)  # 蓝方棋子
-        piece_numbers = np.abs(self.board).astype(np.float32)  # 棋子的实际数值（绝对值）
-        # 获取历史记录中的所有前几个棋盘状态，若不足则填充全0
-        history_records = []
-        for h in list(self.history)[-self.history_length:]:
-            history_records.append(np.abs(h).astype(np.float32))  # 使用绝对值
-        # 如果历史记录不足，补齐全0棋盘
-        while len(history_records) < self.history_length:
-            history_records.insert(0, np.zeros_like(self.board, dtype=np.float32))
-        # 这里只使用最近的一个历史状态作为第四个通道
-        history_tensor = history_records[-1].reshape(5, 5)  # shape: (5, 5)
-        # 堆叠成4个通道的张量: 红方棋子, 蓝方棋子, 棋子数值, 历史记录
-        state_tensor = np.stack([red_pieces, blue_pieces, piece_numbers, history_tensor], axis=0)  # shape: (4,5,5)
-        return torch.tensor(state_tensor, dtype=torch.float32)  # 转换为torch张量，形状: (4,5,5)
+        red_pieces = (self.board > 0).astype(np.float32)
+        blue_pieces = (self.board < 0).astype(np.float32)
+        piece_numbers = np.abs(self.board).astype(np.float32) / 6.0  # 归一化
+        history_tensor = np.zeros_like(self.board, dtype=np.float32)
+        if len(self.history) > 1:
+            history_tensor = np.abs(self.history[-2]).astype(np.float32) / 6.0
+
+        # 骰子结果的独热编码
+        dice_one_hot = np.zeros((6, 5, 5), dtype=np.float32)
+        dice_index = self.current_dice - 1
+        dice_one_hot[dice_index, :, :] = 1.0
+
+        # 堆叠成10个通道的张量
+        state_tensor = np.stack([red_pieces, blue_pieces, piece_numbers, history_tensor] + list(dice_one_hot), axis=0)
+        return torch.tensor(state_tensor, dtype=torch.float32)
+
     def copy(self):
         """
         深度复制游戏状态
         :return: 新的 GameState 实例
         """
-        game_state = GameState(history_length=self.history_length)  # 确保history_length也被复制
-        game_state.board = self.board.copy()  # 复制棋盘
-        game_state.winner = self.winner  # 复制胜利者
-        game_state.current_player = self.current_player  # 复制当前玩家
-        game_state.move_count = self.move_count  # 复制移动计数
-        game_state.history = copy.deepcopy(self.history)  # 深度复制历史记录
+        game_state = GameState(history_length=self.history_length)
+        game_state.board = self.board.copy()
+        game_state.winner = self.winner
+        game_state.current_player = self.current_player
+        game_state.move_count = self.move_count
+        game_state.history = copy.deepcopy(self.history)
         game_state.red_list = self.red_list.copy()
         game_state.blue_list = self.blue_list.copy()
+        game_state.current_dice = self.current_dice  # 复制骰子结果
         return game_state

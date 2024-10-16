@@ -2,6 +2,7 @@ import sys
 import os
 import numpy as np
 import torch
+import random  # 新增：用于掷骰子
 from PySide6 import QtCore
 from PySide6.QtCore import QTimer, Qt, QSize, QThread, Signal
 from PySide6.QtGui import QFont, QIcon
@@ -61,16 +62,13 @@ class EinsteinChess(QMainWindow):
         self.old_button = None
         self.current_row = None
         self.ai_role = "红方"  # 默认 AI 为红方
-        self.selected_number = None
         self.blue_time = 240
         self.move_history = []
         self.red_time = 240
         self.current_turn = "红方"
         self.board = np.zeros((self.board_size, self.board_size), dtype=int)
-        self.com_box = None
         self.ai_numbers = list(range(1, 7))
         self.person_numbers = list(range(1, 7))
-        self.generated_number_label = None
         self.undo_button = None
         self.ai_move_button = None
         self.gen_board_button = None
@@ -88,6 +86,9 @@ class EinsteinChess(QMainWindow):
         self.left_grid_layout = None
         self.left_bottom_layout = None
         self.left_layout = None
+
+        # 新增：骰子结果
+        self.current_dice = None
 
         # 初始化定时器
         self.red_timer = QTimer()
@@ -192,8 +193,22 @@ class EinsteinChess(QMainWindow):
         self.blue_label.setAlignment(Qt.AlignCenter)
         timer_layout.addWidget(self.blue_label)
 
+        # 骰子结果显示
+        self.dice_label = QLabel("骰子结果: -")
+        self.dice_label.setFont(QFont('Arial', 16, QFont.Bold))
+        self.dice_label.setAlignment(Qt.AlignCenter)
+        timer_layout.addWidget(self.dice_label)
+
         player_and_timer_layout.addLayout(timer_layout)
         self.right_layout.addLayout(player_and_timer_layout)
+
+        # 骰子选择控件
+        self.dice_select_box = QComboBox()
+        self.dice_select_box.setFixedSize(280, 40)
+        self.dice_select_box.addItem("选择骰子数")
+        self.dice_select_box.addItems([str(i) for i in range(1, 7)])  # 1到6
+        self.dice_select_box.currentIndexChanged.connect(self.select_dice)
+        self.right_layout.addWidget(self.dice_select_box)
 
         # 中间添加空白区域
         self.right_layout.addStretch(1)
@@ -235,22 +250,6 @@ class EinsteinChess(QMainWindow):
         # 将工具布局添加到右侧布局
         self.right_layout.addLayout(self.tool_layout)
 
-        # 减少工具按钮与棋子选择器之间的空白区域
-        self.right_layout.addStretch(1)
-
-        # 显示选择的棋子标签
-        self.generated_number_label = QLabel("需要移动的棋子")
-        self.generated_number_label.setFont(QFont('Arial', 16, QFont.Bold))
-        self.generated_number_label.setAlignment(Qt.AlignCenter)
-        self.right_layout.addWidget(self.generated_number_label)
-
-        # 数字选择控件
-        self.com_box = QComboBox()
-        self.com_box.setFixedSize(280, 40)
-        self.com_box.addItems([str(i) for i in range(1, 7)])  # 从1到6
-        self.com_box.currentIndexChanged.connect(self.choose_chess)
-        self.right_layout.addWidget(self.com_box)
-
         # 添加空白区域，使得控件不挤在一起
         self.right_layout.addStretch(2)
 
@@ -262,51 +261,82 @@ class EinsteinChess(QMainWindow):
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
+    def select_dice(self, index):
+        """
+        处理骰子选择事件。
+        :param index: 选中的索引
+        """
+        if index == 0:
+            self.current_dice = None
+            self.dice_label.setText("骰子结果: -")
+            print("骰子未选择。")
+        else:
+            self.current_dice = int(self.dice_select_box.currentText())
+            self.dice_label.setText(f"骰子结果: {self.current_dice}")
+            print(f"骰子选择: {self.current_dice}")
+
     def reset_game(self):
         """
         重置棋盘和游戏数据，根据输入框的内容或使用默认值。
         """
         print("重置游戏...")
+
+        # 停止任何正在运行的AI线程，防止多线程冲突
+        if hasattr(self, 'ai_thread') and self.ai_thread.isRunning():
+            self.ai_thread.terminate()
+            self.ai_thread.wait()
+            print("停止了正在运行的AI线程。")
+
         # 获取输入框中的文本内容
-        blue_input_text = self.blue_board_numbers_input.text().strip()
         red_input_text = self.red_board_numbers_input.text().strip()
+        blue_input_text = self.blue_board_numbers_input.text().strip()
 
         # 如果输入为空，则使用默认的数字列表
-        if not blue_input_text:
-            self.person_numbers = list(range(1, 7))
-            print("使用默认蓝方棋子布局。")
-        else:
-            try:
-                self.person_numbers = [int(char) for char in blue_input_text.split(',') if char.strip().isdigit()]
-                if len(self.person_numbers) != 6:
-                    raise ValueError("蓝方棋子数量不正确。")
-                print(f"蓝方棋子布局: {self.person_numbers}")
-            except ValueError:
-                QMessageBox.warning(self, "输入错误", "蓝方棋子布局输入有误。请使用逗号分隔6个数字。使用默认布局。")
-                self.person_numbers = list(range(1, 7))
-                print("蓝方棋子布局输入有误，使用默认布局。")
-
         if not red_input_text:
-            self.ai_numbers = list(range(1, 7))
+            self.person_numbers = list(range(1, 7))
             print("使用默认红方棋子布局。")
         else:
             try:
-                self.ai_numbers = [int(char) for char in red_input_text.split(',') if char.strip().isdigit()]
-                if len(self.ai_numbers) != 6:
+                self.person_numbers = [int(char) for char in red_input_text.split(',') if char.strip().isdigit()]
+                if len(self.person_numbers) != 6:
                     raise ValueError("红方棋子数量不正确。")
-                print(f"红方棋子布局: {self.ai_numbers}")
+                print(f"红方棋子布局: {self.person_numbers}")
             except ValueError:
                 QMessageBox.warning(self, "输入错误", "红方棋子布局输入有误。请使用逗号分隔6个数字。使用默认布局。")
-                self.ai_numbers = list(range(1, 7))
+                self.person_numbers = list(range(1, 7))
                 print("红方棋子布局输入有误，使用默认布局。")
+
+        if not blue_input_text:
+            self.ai_numbers = list(range(1, 7))
+            print("使用默认蓝方棋子布局。")
+        else:
+            try:
+                self.ai_numbers = [int(char) for char in blue_input_text.split(',') if char.strip().isdigit()]
+                if len(self.ai_numbers) != 6:
+                    raise ValueError("蓝方棋子数量不正确。")
+                print(f"蓝方棋子布局: {self.ai_numbers}")
+            except ValueError:
+                QMessageBox.warning(self, "输入错误", "蓝方棋子布局输入有误。请使用逗号分隔6个数字。使用默认布局。")
+                self.ai_numbers = list(range(1, 7))
+                print("蓝方棋子布局输入有误，使用默认布局。")
 
         # 初始化棋盘
         self.board = self.reset_board()
 
         # 设置初始游戏状态
         self.current_turn = "红方"
-        self.red_time = 240
-        self.blue_time = 240
+        # 读取时间输入
+        try:
+            self.red_time = int(self.red_time_input.text()) if self.red_time_input.text() else 240
+        except ValueError:
+            self.red_time = 240
+            QMessageBox.warning(self, "输入错误", "红方时间输入有误，使用默认值240秒。")
+        try:
+            self.blue_time = int(self.blue_time_input.text()) if self.blue_time_input.text() else 240
+        except ValueError:
+            self.blue_time = 240
+            QMessageBox.warning(self, "输入错误", "蓝方时间输入有误，使用默认值240秒。")
+
         self.red_label.setText(f"红方计时器: {self.red_time}")
         self.blue_label.setText(f"蓝方计时器: {self.blue_time}")
 
@@ -318,6 +348,22 @@ class EinsteinChess(QMainWindow):
         # 清空移动历史
         self.move_history = []
         print("移动历史已清空。")
+
+        # 重置选择步骤标志
+        self.sign_op_step = True
+        print("选择步骤标志已重置。")
+
+        # 重置选择的棋子信息
+        self.current_row = None
+        self.current_col = None
+        self.old_button = None
+        print("选择的棋子信息已重置。")
+
+        # 重置骰子结果显示
+        self.current_dice = None
+        self.dice_label.setText("骰子结果: -")
+        self.dice_select_box.setCurrentIndex(0)
+        print("骰子结果已重置。")
 
         # 更新棋盘显示
         self.update_board()
@@ -331,7 +377,7 @@ class EinsteinChess(QMainWindow):
         board = np.zeros((self.board_size, self.board_size), dtype=int)
 
         # 定义填充位置和对应值的列表
-        # 假设棋盘索引从0到4
+        # 红方（人类）棋子为正数，蓝方（AI）棋子为负数
         positions_values = [
             ((0, 0), self.person_numbers[0]),
             ((0, 1), self.person_numbers[1]),
@@ -372,15 +418,23 @@ class EinsteinChess(QMainWindow):
             print(self.board)
             self.update_board()
             self.switch_turn()
+            self.sign_op_step = True
         else:
             QMessageBox.information(self, "提示", "无法悔棋，已达到游戏开始状态。")
             print("无法悔棋，移动历史为空。")
 
     def ai_move(self):
         """
-        使用训练好的模型和 MCTS 选择最佳动作并执行，采用线程以避免阻塞 UI。
+        使用训练好的模型和 MCTS 选择最佳动作并执行。
         """
-        print("AI 回合开始...")
+        print("AI 移动按钮被点击。")
+
+        # 检查骰子是否已选择
+        if self.current_dice is None:
+            QMessageBox.warning(self, "提示", "请先选择骰子数。")
+            print("AI 未选择骰子数。")
+            return
+
         state = self.convert_board_to_game_state()
         if state.is_terminal():
             QMessageBox.information(self, "游戏结束", "当前游戏已经结束。")
@@ -403,17 +457,14 @@ class EinsteinChess(QMainWindow):
             print("AI 无法找到可行的动作。")
             return
 
-        if isinstance(best_action, tuple) and len(best_action) == 2 and isinstance(best_action[0],
-                                                                                   tuple) and isinstance(best_action[1],
-                                                                                                         tuple):
-            # Assume it's a move tuple
+        if isinstance(best_action, tuple) and len(best_action) == 2 and isinstance(best_action[0], tuple) and isinstance(best_action[1], tuple):
+            # 假设它是一个移动元组
             action = best_action
             print(f"AI 选择的动作是一个移动元组: {action}")
         else:
-            # Assume it's an action index
+            # 假设它是一个动作索引
             try:
-                action = self.decode_action(best_action, 1 if self.current_turn == "红方" else -1,
-                                            self.convert_board_to_game_state())
+                action = self.decode_action(best_action, 1 if self.current_turn == "红方" else -1, self.convert_board_to_game_state())
                 print(f"AI 解码后的动作: {action}")
             except ValueError as e:
                 print(f"解码动作失败: {e}")
@@ -424,15 +475,22 @@ class EinsteinChess(QMainWindow):
         self.save_board_state()
 
         # 执行动作
-        state = self.convert_board_to_game_state()
-        state.apply_move(action)
-        self.board = state.board.copy()
-        self.move_history.append(self.board.copy())
-        print("AI 执行动作后的棋盘状态：")
-        print(self.board)
+        start_pos, end_pos = action
+        start_i, start_j = start_pos
+        end_i, end_j = end_pos
+
+        piece_num = self.board[start_i][start_j]
+        target_num = self.board[end_i][end_j]
+
+        self.board[start_i][start_j] = 0
+        if target_num != 0:
+            print(f"棋子在目标位置被吃掉: {target_num}")
+        self.board[end_i][end_j] = piece_num
+        print(f"AI 已移动棋子到 ({end_i}, {end_j})")
         self.update_board()
 
         # 检查游戏是否结束
+        state = self.convert_board_to_game_state()
         winner = state.get_winner()
         if winner is not None:
             if winner == 1:
@@ -441,14 +499,16 @@ class EinsteinChess(QMainWindow):
             elif winner == -1:
                 QMessageBox.information(self, "游戏结束", "蓝方获胜！")
                 print("蓝方获胜！")
-            else:
-                QMessageBox.information(self, "游戏结束", "平局！")
-                print("游戏平局！")
+            # 结束游戏
             self.reset_game()
         else:
             # 切换玩家并启动计时器
             self.switch_turn()
             self.start_timer()
+            # 重置骰子选择
+            self.current_dice = None
+            self.dice_label.setText("骰子结果: -")
+            self.dice_select_box.setCurrentIndex(0)
 
     def switch_turn(self):
         """
@@ -509,6 +569,7 @@ class EinsteinChess(QMainWindow):
         QMessageBox.information(self, "对局结束", message)
         self.reset_game()
 
+    # 更新后的 update_board 方法，修复棋子颜色显示问题
     def update_board(self):
         """
         更新棋盘显示，根据当前棋盘状态生成按钮。
@@ -534,7 +595,7 @@ class EinsteinChess(QMainWindow):
                 if value > 0:
                     icon_filename = f"{value}.jpg"
                 elif value < 0:
-                    icon_filename = f"{value}.jpg"  # 加载负值图像，如 -1.jpg
+                    icon_filename = f"{value}.jpg"  # 保留负号，加载负数文件名
                 else:
                     icon_filename = "0.jpg"
 
@@ -558,20 +619,6 @@ class EinsteinChess(QMainWindow):
         """
         self.move_history.append(self.board.copy())
         print("保存当前棋盘状态到历史。")
-
-    def choose_chess(self):
-        """
-        选择要移动的棋子，来自下拉框的选择。
-        """
-        selected_text = self.com_box.currentText()
-        try:
-            self.selected_number = int(selected_text)
-            self.generated_number_label.setText(f"选择的棋子: {self.selected_number}")
-            print(f"选择的棋子编号: {self.selected_number}")
-        except ValueError:
-            self.selected_number = None
-            self.generated_number_label.setText("需要移动的棋子")
-            print("选择的棋子编号无效。")
 
     def switch_user(self):
         """
@@ -597,20 +644,31 @@ class EinsteinChess(QMainWindow):
             return
 
         if self.sign_op_step:
+            # 用户选择棋子前，必须选择骰子数
+            if self.current_dice is None:
+                QMessageBox.warning(self, "提示", "请先选择骰子数。")
+                print("用户未选择骰子数。")
+                return
+
             # 选择棋子
             piece_num = self.board[row][col]
             print(f"用户尝试选择棋子: {piece_num}")
             if (current_player == "红方" and piece_num > 0) or (current_player == "蓝方" and piece_num < 0):
+                # 检查是否选择的棋子符合骰子要求
+                required_piece = self.current_dice  # 人类需要选择与骰子数相同编号的棋子
+                if abs(piece_num) != required_piece:
+                    QMessageBox.warning(self, "错误", f"请选择编号为 {required_piece} 的棋子！")
+                    print(f"用户选择的棋子编号不符合骰子要求，需要移动编号为 {required_piece} 的棋子。")
+                    return
+
                 self.current_row = row
                 self.current_col = col
                 self.old_button = button
-                selected_icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource", "img",
-                                                  "f.jpg")
+                selected_icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource", "img", "f.jpg")
                 if not os.path.exists(selected_icon_path):
                     QMessageBox.warning(self, "图片加载错误", f"图片路径不存在: {selected_icon_path}")
                     print(f"图片路径不存在: {selected_icon_path}")
-                    selected_icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource", "img",
-                                                      "0.jpg")
+                    selected_icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource", "img", "0.jpg")
                 button.setIcon(QIcon(selected_icon_path))  # 选中标记
                 button.setIconSize(QSize(100, 100))
                 self.sign_op_step = False
@@ -622,10 +680,6 @@ class EinsteinChess(QMainWindow):
             # 移动棋子到目标位置
             target_num = self.board[row][col]
             print(f"用户尝试移动到位置 ({row}, {col})，目标棋子编号: {target_num}")
-            if (current_player == "红方" and target_num > 0) or (current_player == "蓝方" and target_num < 0):
-                QMessageBox.warning(self, "错误", "目标位置已有您的棋子！")
-                print("目标位置已有用户的棋子。")
-                return
 
             # 检查是否选择了有效的移动
             piece_num = self.board[self.current_row][self.current_col]
@@ -645,6 +699,8 @@ class EinsteinChess(QMainWindow):
 
             # 执行动作
             self.board[self.current_row][self.current_col] = 0
+            if target_num != 0:
+                print(f"棋子在目标位置被吃掉: {target_num}")
             self.board[row][col] = piece_num
             print(f"用户已移动棋子到 ({row}, {col})")
             self.update_board()
@@ -659,9 +715,7 @@ class EinsteinChess(QMainWindow):
                 elif winner == -1:
                     QMessageBox.information(self, "游戏结束", "蓝方获胜！")
                     print("蓝方获胜！")
-                else:
-                    QMessageBox.information(self, "游戏结束", "平局！")
-                    print("游戏平局！")
+                # 结束游戏
                 self.reset_game()
                 return
 
@@ -669,15 +723,14 @@ class EinsteinChess(QMainWindow):
             self.switch_turn()
             self.start_timer()
             self.sign_op_step = True
-
-            # 如果切换后的玩家是 AI，则自动触发 AI 移动
-            if self.current_turn == self.ai_role:
-                self.ai_move()
+            # 重置骰子选择
+            self.current_dice = None
+            self.dice_label.setText("骰子结果: -")
+            self.dice_select_box.setCurrentIndex(0)
 
     def is_valid_move(self, action):
         """
         检查移动是否符合游戏规则。
-        需要根据具体的游戏规则实现。
         :param action: ((start_i, start_j), (end_i, end_j))
         :return: True 如果移动合法，否则 False。
         """
@@ -709,8 +762,44 @@ class EinsteinChess(QMainWindow):
             print("移动方向不合法。")
             return False
 
+        # 检查移动是否符合骰子规则
+        required_piece = self.current_dice
+        if required_piece is None:
+            print("没有可移动的棋子符合骰子要求。")
+            return False
+
+        if abs(piece_num) != required_piece:
+            print(f"移动的棋子编号 {abs(piece_num)} 不符合骰子要求 {required_piece}。")
+            return False
+
         print("移动合法。")
         return True
+
+    def get_required_piece(self, player):
+        """
+        AI 移动时，根据骰子结果，确定需要移动的棋子编号。
+        :param player: "红方" 或 "蓝方"
+        :return: 需要移动的棋子编号，或 None 如果没有可移动的棋子
+        """
+        dice = self.current_dice
+        print(f"根据骰子 {dice} 确定需要移动的棋子。")
+
+        # 获取玩家的棋子列表
+        if player == "红方":
+            pieces = [p for p in self.person_numbers if p in self.board]
+        else:
+            pieces = [p for p in self.ai_numbers if -p in self.board]
+
+        # 检查骰子对应的棋子是否在棋盘上
+        if dice in pieces:
+            return dice
+        else:
+            # 找到最接近的棋子编号
+            if not pieces:
+                return None
+            closest_piece = min(pieces, key=lambda x: (abs(x - dice), x))
+            print(f"骰子对应的棋子已被移出，选择最接近的棋子编号: {closest_piece}")
+            return closest_piece
 
     def convert_board_to_game_state(self):
         """
@@ -733,8 +822,11 @@ class EinsteinChess(QMainWindow):
                     blue_pieces.append(-value)
         game_state.red_list = red_pieces
         game_state.blue_list = blue_pieces
-        print(
-            f"转换后的游戏状态：玩家 {self.current_turn}，红方棋子 {game_state.red_list}，蓝方棋子 {game_state.blue_list}")
+
+        # 新增：传递当前骰子结果
+        game_state.current_dice = self.current_dice
+
+        print(f"转换后的游戏状态：玩家 {self.current_turn}，红方棋子 {game_state.red_list}，蓝方棋子 {game_state.blue_list}")
         return game_state
 
     def decode_action(self, action_index, current_player, game_state):
@@ -764,7 +856,7 @@ class EinsteinChess(QMainWindow):
         print(f"当前玩家: {'红方' if current_player == 1 else '蓝方'}, 方向: {direction}, 棋子编号: {piece_num}")
 
         # 查找棋子的当前位置
-        positions = np.argwhere(game_state.board == piece_num)
+        positions = np.argwhere(game_state.board == (piece_num if current_player == 1 else -piece_num))
         if len(positions) == 0:
             raise ValueError(f"Piece {piece_num} not found on the board.")
         start_i, start_j = positions[0]  # 假设第一个找到的棋子
@@ -806,9 +898,9 @@ class EinsteinChess(QMainWindow):
                 raise ValueError(f"Red piece {piece_num} not found in red_list.")
         else:
             direction_map = {(-1, 0): 0, (0, -1): 1, (-1, -1): 2}
-            piece_num = game_state.board[start_i][start_j]
+            piece_num = -game_state.board[start_i][start_j]
             try:
-                piece_index = game_state.blue_list.index(-piece_num)
+                piece_index = game_state.blue_list.index(piece_num)
                 print(f"蓝方棋子编号 {piece_num} 的索引: {piece_index}")
             except ValueError:
                 raise ValueError(f"Blue piece {piece_num} not found in blue_list.")
@@ -828,19 +920,3 @@ if __name__ == "__main__":
     window.setWindowTitle("Einstein Chess")
     window.show()
     sys.exit(app.exec())
-#
-# 代码还有问题，检查代码，优化，对于人类移动的问题很严重，还有是不是界面不够完善？切换ai要检查一下，还有一点就是一开始运行程序开始人机对战多没问题，但是在一局结束后，在重新开始对局，就出现ai移动后，我进行人类移动出现报错目标位子已有你的棋子的报错，我这里补充一下爱恩斯坦棋的规则棋盘为5×5的方格形棋盘，方格为棋位，左上角为红方出发区；右下角为蓝方出发区；
-#
-# (2) 红蓝方各有6枚方块形棋子，分别标有数字1—6。开局时双方棋子在出发区的棋位可以随意摆放；
-#
-# (3) 双方轮流掷骰子，然后走动与骰子显示数字相对应的棋子。如果相对应的棋子已从棋盘上移出，便可走动大于或者小于此数字的并与此数字最接近的棋子，例如：假设编号为4和5的棋子已移出，如果骰子显示为4，则可以走动编号为3或6的棋子；
-#
-# (4) 红方棋子走动方向为向右、向下、向右下，每次走动一格；蓝方棋子走动方向为向左、向上、向左上，每次走动一格；
-#
-# (5) 如果在棋子走动的目标棋位上有棋子，则要将该棋子从棋盘上移出（吃掉）。有时吃掉本方棋子也是一种策略，因为可以增加其它棋子走动的机会与灵活性；
-#
-# (6) 率先到达对方出发区角点或将对方棋子全部吃掉的一方获胜；
-#
-# (7) 对弈结果只有胜负，没有和棋。
-#
-# (8) 每盘每方用时4分钟，超时判负；每轮双方对阵最多7盘，轮流先手（甲方一四五盘先手，乙方二三六七盘先手），两盘中间不休息，先胜4盘为胜方。直接给我修改后的完整代码
